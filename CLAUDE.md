@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This repository provides a NixOS module for running [InvenTree](https://inventree.org/) (an open-source inventory management system) as a native NixOS service. The module packages InvenTree's Python backend and frontend, creates systemd services, and provides a declarative NixOS configuration interface.
 
+**Current InvenTree Version**: 1.0.8
+**NixOS Compatibility**: nixos-unstable (tested)
+**Last Updated**: 2025-11-11
+
 ## Architecture
 
 ### Package Structure
@@ -24,7 +28,9 @@ The flake exposes several packages under `pkgs.inventree.*`:
 
 ### Python Dependency Management
 
-Uses `uv2nix` and `pyproject-nix` to convert `uv.lock` into Nix packages. Python dependencies are defined in `pyproject.toml`, which tracks InvenTree's requirements. Several packages require build system overrides in `flake.nix` (django-allauth, django-mailbox, etc.) to add setuptools/wheel.
+Uses `uv2nix` and `pyproject-nix` to convert `uv.lock` into Nix packages. Python dependencies are defined in `pyproject.toml`, which tracks InvenTree's requirements.
+
+Several packages require build system overrides in `flake.nix` (django-allauth, django-mailbox, django-xforwardedfor-middleware, dj-rest-auth, odfpy, sgmllib3k, coreschema, invoke) to add setuptools/wheel. This is necessary because these packages use legacy setuptools but don't declare it in their build dependencies, which causes build failures in the stricter Nix environment.
 
 The `weasyprint` package uses a special hack to use the pre-built nixpkgs version instead of building from source.
 
@@ -44,6 +50,20 @@ InvenTree requires two services running simultaneously:
 2. **inventree-cluster**: Background worker (Django Q2) for async tasks
 
 Both services share the same configuration file and database.
+
+```
+┌──────────────────┐     ┌──────────────────┐
+│ inventree-server │────▶│   PostgreSQL     │
+│   (gunicorn)     │     │ or SQLite/MySQL  │
+└──────────────────┘     └──────────────────┘
+         │                        ▲
+         │ Enqueues tasks         │
+         ▼                        │
+┌──────────────────┐              │
+│inventree-cluster │──────────────┘
+│   (Django Q2)    │    Processes tasks
+└──────────────────┘
+```
 
 ## Development Commands
 
@@ -79,23 +99,15 @@ Follow the process in README.md:
 
 1. Enter uv devshell: `nix develop .#uv`
 2. Update InvenTree submodule to latest release
-3. Update version and hashes in `pkgs/src.nix` (use dummy hashes initially)
+3. Update the version and srcs targets in `pkgs/src.nix` (use dummy hashes to ensure new downloads happen)
 4. Run `./update-overrides.sh` to regenerate `pyproject.toml` and `uv.lock`
-5. Run `nix build .#src` to verify builds and get correct hashes
+5. Run `nix build .#src` to get expected hashes and verify the build succeeds
 
 The `update-overrides.sh` script:
 - Cleans existing uv files
 - Runs `uv init` and `uv add` with InvenTree's requirements
 - Adds custom dependencies (invoke from git, pip for plugins)
 - Adds setuptools workaround to pyproject.toml
-
-### Using MCP NixOS Tools
-
-When working with this repository, use the MCP NixOS tools for:
-- Searching NixOS packages: `mcp__nixos__nixos_search`
-- Looking up package info: `mcp__nixos__nixos_info`
-- Finding package versions: `mcp__nixos__nixhub_package_versions`
-- Checking Home Manager options: `mcp__nixos__home_manager_search`
 
 ## Key Technical Details
 
@@ -127,7 +139,13 @@ Static files are pre-built during the `src` package build phase and then copied 
 
 ### Patches Applied
 
-`patches/disable-fs-mutation-tasks.patch`: Disables invoke tasks that would attempt to modify the Nix store after static files are generated.
+`patches/disable-fs-mutation-tasks.patch`: Disables invoke tasks that would attempt to modify the immutable Nix store. Specifically disables:
+- `install`: Installing Python packages (dependencies are managed by Nix)
+- `static`: Collecting static files (pre-built during package build)
+- `frontend_compile`: Compiling frontend code (pre-built and fetched from releases)
+- `frontend_download`: Downloading frontend assets (fetched during build)
+
+These tasks are made no-ops because Nix builds are immutable - all dependencies and assets must be declared at build time, not modified at runtime. The patch ensures InvenTree's invoke commands won't fail when trying to write to read-only Nix store paths.
 
 ## Flake Inputs
 
@@ -159,3 +177,48 @@ To test the NixOS module in a VM or system:
   };
 }
 ```
+
+## Troubleshooting
+
+### Migration Failures
+
+If database migrations fail during service startup:
+1. Check logs: `journalctl -u inventree-server -n 100`
+2. Verify database connection settings in `services.inventree.config`
+3. Ensure database service is running and accessible
+4. Check that `serverStartTimeout` is sufficient (default: 10min)
+
+### Build Errors
+
+**Hash mismatches**: Use dummy hashes (all zeros) in `pkgs/src.nix` to force new downloads, then get correct hashes from build output.
+
+**Python dependency issues**: Check that `pyproject.toml` and `uv.lock` are in sync. Re-run `./update-overrides.sh` if needed.
+
+**Missing build dependencies**: Some packages may need additional overrides in `flake.nix` - check the error for missing setuptools/wheel.
+
+### Service Issues
+
+**Service won't start**:
+- Check logs: `journalctl -u inventree-server -xe` and `journalctl -u inventree-cluster -xe`
+- Verify static files exist: `ls /var/lib/inventree/static` (or your configured `static_root`)
+- Check file permissions on dataDir, static_root, media_root
+
+**Background tasks not running**:
+- Ensure `inventree-cluster` service is active: `systemctl status inventree-cluster`
+- Both services must share the same database and config file
+
+### Accessing Logs
+
+- Server logs: `journalctl -u inventree-server -f`
+- Cluster worker logs: `journalctl -u inventree-cluster -f`
+- Both services: `journalctl -u inventree-* -f`
+
+## MCP NixOS Tools
+
+When working with this repository, use the available MCP NixOS tools for package and option lookups:
+
+- `mcp__nixos__nixos_search`: Search NixOS packages
+- `mcp__nixos__nixos_info`: Get detailed package information
+- `mcp__nixos__nixhub_package_versions`: Find specific package versions and commit hashes
+- `mcp__nixos__home_manager_search`: Search Home Manager options
+- `mcp__nixos__darwin_search`: Search nix-darwin options (macOS)
