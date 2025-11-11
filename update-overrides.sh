@@ -28,6 +28,9 @@ uv add "invoke @ git+https://github.com/pyinvoke/invoke"
 # Related to plugins
 uv add pip
 
+# Database drivers (optional in InvenTree but required for NixOS module)
+uv add psycopg2-binary  # PostgreSQL support
+
 # https://stackoverflow.com/a/72547402
 echo "Adding setuptools workaround to pyproject"
 echo -e "[tool.setuptools]\npy-modules = []" >> pyproject.toml
