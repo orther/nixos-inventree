@@ -6,9 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This repository provides a NixOS module for running [InvenTree](https://inventree.org/) (an open-source inventory management system) as a native NixOS service. The module packages InvenTree's Python backend and frontend, creates systemd services, and provides a declarative NixOS configuration interface.
 
-**Current InvenTree Version**: 1.0.8
+**Current InvenTree Version**: See `pkgs/src.nix` for the current version
 **NixOS Compatibility**: nixos-unstable (tested)
 **Last Updated**: 2025-11-11
+
+> **Note**: When updating InvenTree versions, remember to update the "Last Updated" date above.
 
 ## Architecture
 
@@ -103,11 +105,14 @@ Follow the process in README.md:
 4. Run `./update-overrides.sh` to regenerate `pyproject.toml` and `uv.lock`
 5. Run `nix build .#src` to get expected hashes and verify the build succeeds
 
-The `update-overrides.sh` script:
-- Cleans existing uv files
-- Runs `uv init` and `uv add` with InvenTree's requirements
-- Adds custom dependencies (invoke from git, pip for plugins)
-- Adds setuptools workaround to pyproject.toml
+The `update-overrides.sh` script performs the following:
+- Cleans existing uv-generated files (`pyproject.toml`, `uv.lock`, etc.)
+- Runs `uv init` to create a new project
+- Runs `uv add -r InvenTree/src/backend/requirements.txt` to add InvenTree's dependencies
+- Adds custom dependencies:
+  - **invoke from git**: Uses the latest version from GitHub to fix [issue #1011](https://github.com/pyinvoke/invoke/issues/1011), waiting for version 2.3.0 release
+  - **pip**: Required for InvenTree's plugin system support
+- Adds setuptools workaround to `pyproject.toml` to prevent setuptools from creating unwanted modules
 
 ## Key Technical Details
 
@@ -166,15 +171,85 @@ To test the NixOS module in a VM or system:
   services.inventree = {
     enable = true;
     siteUrl = "http://localhost:8000";
+
+    # Optional network configuration
+    bindIp = "127.0.0.1";  # Default: 127.0.0.1 (localhost only)
+    bindPort = 8000;       # Default: 8000
+
+    # Optional: Allowed hosts for security (defaults to siteUrl if not set)
+    allowedHosts = [ "localhost" "inventree.example.com" ];
+
+    # Optional: Increase timeout for long migrations
+    serverStartTimeout = "10min";  # Default: 10min
+
     config = {
       # Database, media paths, etc.
+      # See InvenTree docs: https://docs.inventree.org/en/stable/start/config/
     };
+
     users.admin = {
       email = "admin@example.com";
       is_superuser = true;
-      password_file = /path/to/password;
+      password_file = /path/to/password;  # Secure this file appropriately
     };
   };
+}
+```
+
+### Important Module Options
+
+- **`bindIp`**: IP address to bind the server to. Use `"127.0.0.1"` for localhost only (recommended for reverse proxy setups), or `"0.0.0.0"` to bind to all interfaces.
+- **`bindPort`**: Port number for the server (default: 8000).
+- **`siteUrl`**: The base URL users will use to access InvenTree. Critical for correct operation.
+- **`allowedHosts`**: List of allowed hostnames. If empty, defaults to allow all (`["*"]`). The `siteUrl` hostname is automatically added to this list.
+- **`serverStartTimeout`**: How long systemd waits for the server to start (default: 10min). Increase for large databases with lengthy migrations.
+- **`dataDir`**: Base directory for all InvenTree data (default: `/var/lib/inventree`).
+- **`config`**: Arbitrary configuration passed to InvenTree's `config.yaml`. See [InvenTree configuration docs](https://docs.inventree.org/en/stable/start/config/) for available options.
+
+## Security Considerations
+
+### Password Files
+User passwords are stored in files referenced by `password_file` paths. Ensure these files:
+- Are owned by root with restricted permissions (e.g., `chmod 600`)
+- Are not world-readable or in publicly accessible locations
+- Are backed up securely if needed
+- Use strong passwords (consider using password managers to generate them)
+
+### Network Security
+- **Localhost binding**: By default, the server binds to `127.0.0.1` (localhost only). This is the recommended configuration when using a reverse proxy.
+- **Public binding**: Only use `bindIp = "0.0.0.0"` if you understand the security implications. Always use HTTPS/TLS when exposing to the internet.
+- **Allowed hosts**: Configure `allowedHosts` appropriately to prevent host header injection attacks. Never use `["*"]` in production unless necessary.
+
+### Production Deployments
+For production use, it's strongly recommended to:
+1. **Use a reverse proxy** (nginx, Caddy, Traefik) in front of InvenTree for:
+   - TLS/SSL termination
+   - Rate limiting
+   - Request filtering
+   - Static file serving (optional performance optimization)
+
+2. **Use a proper database**: Configure PostgreSQL or MySQL instead of the default SQLite for better performance and reliability.
+
+3. **Configure backups**: Use InvenTree's backup features and the `backup_dir` configuration option.
+
+4. **Keep updated**: Regularly update to the latest InvenTree version for security patches.
+
+Example reverse proxy configuration (nginx):
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name inventree.example.com;
+
+    ssl_certificate /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
 }
 ```
 
@@ -222,3 +297,38 @@ When working with this repository, use the available MCP NixOS tools for package
 - `mcp__nixos__nixhub_package_versions`: Find specific package versions and commit hashes
 - `mcp__nixos__home_manager_search`: Search Home Manager options
 - `mcp__nixos__darwin_search`: Search nix-darwin options (macOS)
+
+## Documentation Maintenance
+
+### Keeping Documentation Current
+
+When making architectural or configuration changes to this repository, please update this CLAUDE.md file accordingly:
+
+- **Package changes**: Update the "Package Structure" section if adding, removing, or significantly modifying packages
+- **NixOS module options**: Update the "Important Module Options" section when adding new configuration options
+- **Dependency changes**: Update Python dependency information if the override list changes
+- **Build process changes**: Update development commands and workflow descriptions
+- **Version updates**: Update the "Last Updated" date in the Project Overview section
+
+### Contributing to Documentation
+
+If you notice missing, outdated, or incorrect information:
+1. Make the corrections directly in CLAUDE.md
+2. Submit a pull request with clear descriptions of what was updated and why
+3. Tag PRs with documentation changes using the `docs:` commit prefix
+
+### External Resources
+
+For more information about InvenTree itself, consult the official documentation:
+
+- **InvenTree Documentation**: https://docs.inventree.org/
+- **Configuration Reference**: https://docs.inventree.org/en/stable/start/config/
+- **API Documentation**: https://docs.inventree.org/en/stable/api/api/
+- **Plugin Development**: https://docs.inventree.org/en/stable/extend/plugins/
+- **InvenTree GitHub**: https://github.com/inventree/InvenTree
+
+For Nix-specific documentation:
+- **NixOS Manual**: https://nixos.org/manual/nixos/stable/
+- **Nix Pills**: https://nixos.org/guides/nix-pills/
+- **pyproject-nix**: https://pyproject-nix.github.io/pyproject.nix/
+- **uv2nix**: https://github.com/pyproject-nix/uv2nix
