@@ -111,6 +111,7 @@ dependencies = [
     "prettytable==3.16.0",
     "protobuf==6.31.1",
     "psutil==7.0.0",
+    "psycopg2-binary>=2.9.11",
     "py-moneyed==3.0",
     "pycparser==2.22",
     "pydyf==0.11.0",

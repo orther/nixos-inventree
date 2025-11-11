@@ -36,6 +36,8 @@ Several packages require build system overrides in `flake.nix` (django-allauth, 
 
 The `weasyprint` package uses a special hack to use the pre-built nixpkgs version instead of building from source.
 
+**Database drivers**: The module includes `psycopg2-binary` for PostgreSQL support. InvenTree's base requirements don't include database drivers (they're optional based on database choice), but the NixOS module adds them automatically to support common deployment scenarios.
+
 ### NixOS Module
 
 The module (defined at bottom of `flake.nix`) provides `services.inventree` options:
